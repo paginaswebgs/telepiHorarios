@@ -6,7 +6,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const uri = "mongodb+srv://paginaswebsgs:xFjHRGbFHHIw4YAB@database.ocbrszk.mongodb.net/tlpHorarios?retryWrites=true&w=majority";
+const uri = process.env.MONGODB_URI;
 
 const client = new MongoClient(uri);
 let collection;
@@ -51,9 +51,7 @@ app.post("/login", async (req, res) => {
       return res.status(401).json({ mensaje: "Contraseña incorrecta" });
     }
 
-    // Eliminar password antes de enviar al cliente
     const { password: pwd, ...usuarioSinPass } = usuario;
-
     res.json({ mensaje: "Login correcto", usuario: usuarioSinPass });
   } catch (error) {
     console.error("Error en login:", error);
@@ -63,17 +61,13 @@ app.post("/login", async (req, res) => {
 
 app.put('/usuarios/:usuarioId/horarios/:mes/:dia', async (req, res) => {
   const { usuarioId, mes, dia } = req.params;
-  const { entrada: entradaVieja, salida: salidaVieja } = req.query; // horario original para buscar
-  const { entrada: entradaNueva, salida: salidaNueva } = req.body; // nuevos valores para actualizar
+  const { entrada: entradaVieja, salida: salidaVieja } = req.query;
+  const { entrada: entradaNueva, salida: salidaNueva } = req.body;
 
-  if (!entradaVieja || !salidaVieja) {
-    return res.status(400).json({ error: 'Faltan parámetros entrada o salida originales para identificar el horario' });
-  }
-  if (!entradaNueva || !salidaNueva) {
-    return res.status(400).json({ error: 'Faltan nuevos valores de entrada o salida para actualizar' });
+  if (!entradaVieja || !salidaVieja || !entradaNueva || !salidaNueva) {
+    return res.status(400).json({ error: 'Faltan parámetros necesarios' });
   }
 
-  // Conversor de "HH:mm" a minutos
   const timeToMinutes = (time) => {
     const [h, m] = time.split(":").map(Number);
     return h * 60 + m;
@@ -87,34 +81,27 @@ app.put('/usuarios/:usuarioId/horarios/:mes/:dia', async (req, res) => {
     }
 
     const mesHorario = usuario.horarios.find(h => h.mes === mes);
-
     if (!mesHorario) {
       return res.status(404).json({ error: 'Mes no encontrado' });
     }
 
-    // Verificar solapamiento con otros horarios del mismo día (ignorando el que se está editando)
     const entradaNuevaMin = timeToMinutes(entradaNueva);
     const salidaNuevaMin = timeToMinutes(salidaNueva);
 
     const solapamiento = mesHorario.dias.some(d => {
-      if (d.dia !== dia) return false; // otro día, no interesa
-
-      // Ignorar el horario que se está editando
+      if (d.dia !== dia) return false;
       if (d.entrada === entradaVieja && d.salida === salidaVieja) return false;
 
       const eMin = timeToMinutes(d.entrada);
       const sMin = timeToMinutes(d.salida);
-
       return entradaNuevaMin < sMin && salidaNuevaMin > eMin;
     });
 
     if (solapamiento) {
-      return res.status(400).json({ error: 'El nuevo horario se solapa con otro horario asignado en ese día' });
+      return res.status(400).json({ error: 'Horario solapado' });
     }
 
-    // Actualizar el horario específico
     let encontrado = false;
-
     const nuevosDias = mesHorario.dias.map(d => {
       if (d.dia === dia && d.entrada === entradaVieja && d.salida === salidaVieja) {
         encontrado = true;
@@ -124,24 +111,17 @@ app.put('/usuarios/:usuarioId/horarios/:mes/:dia', async (req, res) => {
     });
 
     if (!encontrado) {
-      return res.status(404).json({ error: 'Horario no encontrado para actualizar' });
+      return res.status(404).json({ error: 'Horario no encontrado' });
     }
 
-    const horariosActualizados = usuario.horarios.map(h => {
-      if (h.mes === mes) {
-        return { ...h, dias: nuevosDias };
-      }
-      return h;
-    });
+    const horariosActualizados = usuario.horarios.map(h =>
+      h.mes === mes ? { ...h, dias: nuevosDias } : h
+    );
 
     const resultado = await collection.updateOne(
       { _id: usuarioId },
       { $set: { horarios: horariosActualizados } }
     );
-
-    if (resultado.modifiedCount === 0) {
-      return res.status(500).json({ error: 'No se pudo actualizar el horario' });
-    }
 
     res.json({ mensaje: 'Horario actualizado correctamente' });
 
@@ -151,14 +131,9 @@ app.put('/usuarios/:usuarioId/horarios/:mes/:dia', async (req, res) => {
   }
 });
 
-
-
-//funciona
 app.delete('/usuarios/:usuarioId/horarios/:mes/:dia', async (req, res) => {
   const { usuarioId, mes, dia } = req.params;
   const { entrada, salida } = req.query;
-
-  console.log('Parámetros recibidos:', { usuarioId, mes, dia, entrada, salida });
 
   if (!entrada || !salida) {
     return res.status(400).json({ error: 'Faltan parámetros entrada o salida' });
@@ -171,10 +146,7 @@ app.delete('/usuarios/:usuarioId/horarios/:mes/:dia', async (req, res) => {
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
 
-    console.log('Usuario encontrado:', usuario.nombre);
-
     const mesHorario = usuario.horarios.find(h => h.mes === mes);
-
     if (!mesHorario) {
       return res.status(404).json({ error: 'Mes no encontrado' });
     }
@@ -182,24 +154,17 @@ app.delete('/usuarios/:usuarioId/horarios/:mes/:dia', async (req, res) => {
     const nuevosDias = mesHorario.dias.filter(d => !(d.dia === dia && d.entrada === entrada && d.salida === salida));
 
     if (nuevosDias.length === mesHorario.dias.length) {
-      return res.status(404).json({ error: 'Horario no encontrado para eliminar' });
+      return res.status(404).json({ error: 'Horario no encontrado' });
     }
 
-    const horariosActualizados = usuario.horarios.map(h => {
-      if (h.mes === mes) {
-        return { ...h, dias: nuevosDias };
-      }
-      return h;
-    });
+    const horariosActualizados = usuario.horarios.map(h =>
+      h.mes === mes ? { ...h, dias: nuevosDias } : h
+    );
 
-    const resultado = await collection.updateOne(
+    await collection.updateOne(
       { _id: usuarioId },
       { $set: { horarios: horariosActualizados } }
     );
-
-    if (resultado.modifiedCount === 0) {
-      return res.status(500).json({ error: 'No se pudo eliminar el horario' });
-    }
 
     res.json({ mensaje: 'Horario eliminado correctamente' });
 
@@ -217,7 +182,6 @@ app.post('/usuarios/:usuarioId/horarios/:mes/:dia', async (req, res) => {
     return res.status(400).json({ error: 'Faltan entrada o salida' });
   }
 
-  // Función para convertir tiempo "HH:mm" a minutos desde medianoche
   const timeToMinutes = (time) => {
     const [h, m] = time.split(":").map(Number);
     return h * 60 + m;
@@ -231,56 +195,38 @@ app.post('/usuarios/:usuarioId/horarios/:mes/:dia', async (req, res) => {
     }
 
     let mesHorario = usuario.horarios.find(h => h.mes === mes);
-
     if (!mesHorario) {
       mesHorario = { mes, dias: [] };
       usuario.horarios.push(mesHorario);
     }
 
-    // Filtrar horarios en ese día (no es necesario checar usuarioId dentro porque es del mismo usuario)
-    const horariosEnDiaUsuario = mesHorario.dias.filter(d => d.dia === dia);
+    const horariosEnDia = mesHorario.dias.filter(d => d.dia === dia);
 
-    // Validar que no haya más de dos horarios
-    if (horariosEnDiaUsuario.length >= 2) {
-      return res.status(400).json({ error: 'No puedes asignar más de dos horarios en un día para este usuario' });
+    if (horariosEnDia.length >= 2) {
+      return res.status(400).json({ error: 'Máximo 2 horarios por día' });
     }
 
-    // Evitar duplicados exactos
-    const horarioDuplicado = horariosEnDiaUsuario.find(
-      d => d.entrada === entrada && d.salida === salida
-    );
-    if (horarioDuplicado) {
-      return res.status(400).json({ error: 'Este horario ya está asignado para este usuario en este día' });
+    if (horariosEnDia.some(d => d.entrada === entrada && d.salida === salida)) {
+      return res.status(400).json({ error: 'Horario duplicado' });
     }
 
-    // Verificar solapamiento
-    const entradaMinutos = timeToMinutes(entrada);
-    const salidaMinutos = timeToMinutes(salida);
+    const entradaMin = timeToMinutes(entrada);
+    const salidaMin = timeToMinutes(salida);
 
-    const haySolapamiento = horariosEnDiaUsuario.some(({ entrada: e, salida: s }) => {
-      const eMin = timeToMinutes(e);
-      const sMin = timeToMinutes(s);
-
-      // Condición de solapamiento:
-      // El nuevo horario empieza antes de que termine otro, y termina después de que empieza otro
-      return entradaMinutos < sMin && salidaMinutos > eMin;
-    });
-
-    if (haySolapamiento) {
-      return res.status(400).json({ error: 'El horario se solapa con otro ya asignado para este usuario en este día' });
+    if (horariosEnDia.some(d => {
+      const eMin = timeToMinutes(d.entrada);
+      const sMin = timeToMinutes(d.salida);
+      return entradaMin < sMin && salidaMin > eMin;
+    })) {
+      return res.status(400).json({ error: 'Horario solapado' });
     }
 
-    // Añadir nuevo horario
     mesHorario.dias.push({ dia, entrada, salida });
 
-    const resultado = await collection.updateOne(
+    await collection.updateOne(
       { _id: usuarioId },
       { $set: { horarios: usuario.horarios } }
     );
-
-    if (resultado.modifiedCount === 0) {
-      return res.status(500).json({ error: 'No se pudo crear el horario' });
-    }
 
     res.status(201).json({ mensaje: 'Horario creado correctamente' });
 
@@ -289,15 +235,6 @@ app.post('/usuarios/:usuarioId/horarios/:mes/:dia', async (req, res) => {
     res.status(500).json({ error: 'Error en el servidor' });
   }
 });
-
-
-
-
-
-
-
-
-
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => console.log(`API corriendo en puerto ${PORT}`));
